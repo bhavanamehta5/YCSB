@@ -379,11 +379,32 @@ public final class Client {
           }
         }
 
+        try {
+          DB db = DBFactory.newDB(dbname,props, tracer);
+          System.err.println("Executing validation process...");
+          db.init();
+          if (workload.validate(db))
+            System.err.println("Database validation succeeded.");
+          else
+            System.err.println("Database validation failed.");
+        } catch (WorkloadException e) {
+          System.err.println("Database validation failed with error: " + e.getMessage());
+          e.printStackTrace();
+          e.printStackTrace(System.err);
+        } catch (UnknownDBException e) {
+          // TODO Auto-generated catch block
+          e.printStackTrace();
+          e.printStackTrace(System.err);
+        } catch (DBException e) {
+          e.printStackTrace();
+          e.printStackTrace(System.err);
+        }
+
         workload.cleanup();
       }
     } catch (WorkloadException e) {
       e.printStackTrace();
-      e.printStackTrace(System.out);
+      e.printStackTrace(System.err);
       System.exit(0);
     }
 
@@ -418,7 +439,7 @@ public final class Client {
           opcount = Integer.parseInt(props.getProperty(RECORD_COUNT_PROPERTY, DEFAULT_RECORD_COUNT));
         }
       }
-      if (threadcount > opcount && opcount > 0){
+      if (threadcount > opcount){
         threadcount = opcount;
         System.out.println("Warning: the threadcount is bigger than recordcount, the threadcount will be recordcount!");
       }

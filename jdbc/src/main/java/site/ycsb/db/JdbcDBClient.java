@@ -16,17 +16,14 @@
  */
 package site.ycsb.db;
 
-import site.ycsb.DB;
-import site.ycsb.DBException;
-import site.ycsb.ByteIterator;
-import site.ycsb.Status;
-import site.ycsb.StringByteIterator;
+import com.google.cloud.spanner.jdbc.JdbcSqlExceptionFactory;
+import site.ycsb.*;
+import site.ycsb.db.flavors.DBFlavor;
 
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import site.ycsb.db.flavors.DBFlavor;
 
 /**
  * A class that wraps a JDBC compliant database to allow it to be interfaced
@@ -70,6 +67,11 @@ public class JdbcDBClient extends DB {
   /** The name of the property for the number of fields in a record. */
   public static final String FIELD_COUNT_PROPERTY = "fieldcount";
 
+  /** Connection serializable, default is not enabled. */
+  public static final String CONN_SERIALIZABLE = "conn.serializable";
+
+  public static final String DEFAULT_CONN_SERIALIZABLE = "true";
+
   /** Default number of fields in a record. */
   public static final String FIELD_COUNT_PROPERTY_DEFAULT = "10";
 
@@ -81,12 +83,10 @@ public class JdbcDBClient extends DB {
 
   /** The field name prefix in the table. */
   public static final String COLUMN_PREFIX = "FIELD";
+  public static final String SELECT_FOR_UPDATE = "db.selectForUpdate";
+  public static final boolean DEFAULT_SELECT_FOR_UPDATE = false;
 
-  /** SQL:2008 standard: FETCH FIRST n ROWS after the ORDER BY. */
-  private boolean sqlansiScans = false;
-  /** SQL Server before 2012: TOP n after the SELECT. */
-  private boolean sqlserverScans = false;
-
+  private boolean sqlserver = false;
   private List<Connection> conns;
   private boolean initialized = false;
   private Properties props;
@@ -100,6 +100,7 @@ public class JdbcDBClient extends DB {
   /** DB flavor defines DB-specific syntax and behavior for the
    * particular database. Current database flavors are: {default, phoenix} */
   private DBFlavor dbFlavor;
+  private boolean selectForUpdate;
 
   /**
    * Ordered field information for insert and update statements.
@@ -187,32 +188,24 @@ public class JdbcDBClient extends DB {
     String user = props.getProperty(CONNECTION_USER, DEFAULT_PROP);
     String passwd = props.getProperty(CONNECTION_PASSWD, DEFAULT_PROP);
     String driver = props.getProperty(DRIVER_CLASS);
+    boolean isSerializable = (Boolean.parseBoolean(props.getProperty(CONN_SERIALIZABLE, DEFAULT_CONN_SERIALIZABLE)));
+
+    if (driver.contains("sqlserver")) {
+      sqlserver = true;
+    }
 
     this.jdbcFetchSize = getIntProperty(props, JDBC_FETCH_SIZE);
     this.batchSize = getIntProperty(props, DB_BATCH_SIZE);
 
-    this.autoCommit = getBoolProperty(props, JDBC_AUTO_COMMIT, true);
+    // for transactional testing, force auto-commit off
+    this.autoCommit = false;
     this.batchUpdates = getBoolProperty(props, JDBC_BATCH_UPDATES, false);
 
+    // for transactional testing, we might need "FOR UPDATE" syntax to lock row when reading
+    this.selectForUpdate = getBoolProperty(props, SELECT_FOR_UPDATE, DEFAULT_SELECT_FOR_UPDATE);
+
     try {
-//  The SQL Syntax for Scan depends on the DB engine
-//  - SQL:2008 standard: FETCH FIRST n ROWS after the ORDER BY
-//  - SQL Server before 2012: TOP n after the SELECT
-//  - others (MySQL,MariaDB, PostgreSQL before 8.4)
-//  TODO: check product name and version rather than driver name
       if (driver != null) {
-        if (driver.contains("sqlserver")) {
-          sqlserverScans = true;
-          sqlansiScans = false;
-        }
-        if (driver.contains("oracle")) {
-          sqlserverScans = false;
-          sqlansiScans = true;
-        }
-        if (driver.contains("postgres")) {
-          sqlserverScans = false;
-          sqlansiScans = true;
-        }
         Class.forName(driver);
       }
       int shardCount = 0;
@@ -229,7 +222,11 @@ public class JdbcDBClient extends DB {
         // operations should auto commit, except when explicitly told not to
         // (this is necessary in cases such as for PostgreSQL when running a
         // scan workload with fetchSize)
-        conn.setAutoCommit(autoCommit);
+
+        // Set isolation level to SERIALIZABLE
+        if (isSerializable) {
+          conn.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
+        }
 
         shardCount++;
         conns.add(conn);
@@ -241,7 +238,7 @@ public class JdbcDBClient extends DB {
 
       this.dbFlavor = DBFlavor.fromJdbcUrl(urlArr[0]);
     } catch (ClassNotFoundException e) {
-      System.err.println("Error in initializing the JDBS driver: " + e);
+      System.err.println("Error in initializing the JDBC driver: " + e);
       throw new DBException(e);
     } catch (SQLException e) {
       System.err.println("Error in database operation: " + e);
@@ -252,6 +249,43 @@ public class JdbcDBClient extends DB {
     }
 
     initialized = true;
+    System.err.println("Successfully initialized...");
+  }
+
+  @Override
+  public void start() throws DBException {
+    super.start();
+    try {
+      conns.get(0).setAutoCommit(autoCommit);
+    } catch (SQLException e) {
+//      e.printStackTrace();
+      throw new DBException(e);
+    }
+  }
+
+  @Override
+  public void commit() throws DBException {
+    super.commit();
+    try {
+      conns.get(0).commit();
+    } catch (JdbcSqlExceptionFactory.JdbcAbortedException ae) {
+      ae.printStackTrace();
+      throw new DBException(ae);
+    } catch (SQLException e) {
+      e.printStackTrace();
+      throw new DBException(e);
+    }
+  }
+
+  @Override
+  public void abort() throws DBException {
+    super.abort();
+    try {
+      conns.get(0).rollback();
+    } catch (SQLException e) {
+//      e.printStackTrace();
+      throw new DBException(e);
+    }
   }
 
   @Override
@@ -300,6 +334,27 @@ public class JdbcDBClient extends DB {
     return stmt;
   }
 
+  /** implemented for closed_economy_workload */
+  private PreparedStatement createAndCacheReadForUpdateStatement(String table, String key)
+      throws SQLException {
+    // if this method works, we may need to add this method to DBFlavor interface, and have associated type/key
+    // String readForUpdateStatement = dbFlavor.createReadForUpdateStatement(table, key);
+
+    // SELECT * FROM <table> WHERE <primary_key> = ? FOR UPDATE
+    StringBuilder readForUpdate = new StringBuilder("SELECT * FROM ").append(table).append(" WHERE ")
+        .append(JdbcDBClient.PRIMARY_KEY).append(" = ").append("?").append(" FOR UPDATE");
+    PreparedStatement readForUpdateStatement = getShardConnectionByKey(key).prepareStatement(readForUpdate.toString());
+
+    // TODO: enable caching
+    // cache the statement if it is not cached, for concurrent threads
+//    PreparedStatement stmt = cachedStatements.putIfAbsent(null, readForUpdateStatement);
+//    if (stmt == null) {
+//      return readForUpdateStatement;
+//    }
+//    return stmt;
+    return readForUpdateStatement;
+  }
+
   private PreparedStatement createAndCacheDeleteStatement(StatementType deleteType, String key)
       throws SQLException {
     String delete = dbFlavor.createDeleteStatement(deleteType, key);
@@ -324,7 +379,7 @@ public class JdbcDBClient extends DB {
 
   private PreparedStatement createAndCacheScanStatement(StatementType scanType, String key)
       throws SQLException {
-    String select = dbFlavor.createScanStatement(scanType, key, sqlserverScans, sqlansiScans);
+    String select = dbFlavor.createScanStatement(scanType, key, sqlserver);
     PreparedStatement scanStatement = getShardConnectionByKey(key).prepareStatement(select);
     if (this.jdbcFetchSize > 0) {
       scanStatement.setFetchSize(this.jdbcFetchSize);
@@ -339,11 +394,20 @@ public class JdbcDBClient extends DB {
   @Override
   public Status read(String tableName, String key, Set<String> fields, Map<String, ByteIterator> result) {
     try {
-      StatementType type = new StatementType(StatementType.Type.READ, tableName, 1, "", getShardIndexByKey(key));
-      PreparedStatement readStatement = cachedStatements.get(type);
-      if (readStatement == null) {
-        readStatement = createAndCacheReadStatement(type, key);
+      PreparedStatement readStatement;
+      if (selectForUpdate) {
+        // For closed_economy_workload
+        // TODO: add it to DBFlavor and create statement type
+        readStatement = createAndCacheReadForUpdateStatement(tableName, key);
+      } else {
+        // for normal read without locking the row
+        StatementType type = new StatementType(StatementType.Type.READ, tableName, 1, "", getShardIndexByKey(key));
+        readStatement = cachedStatements.get(type);
+        if (readStatement == null) {
+          readStatement = createAndCacheReadStatement(type, key);
+        }
       }
+
       readStatement.setString(1, key);
       ResultSet resultSet = readStatement.executeQuery();
       if (!resultSet.next()) {
@@ -373,11 +437,9 @@ public class JdbcDBClient extends DB {
       if (scanStatement == null) {
         scanStatement = createAndCacheScanStatement(type, startKey);
       }
-      // SQL Server TOP syntax is at first
-      if (sqlserverScans) {
+      if (sqlserver) {
         scanStatement.setInt(1, recordcount);
         scanStatement.setString(2, startKey);
-      // FETCH FIRST and LIMIT are at the end
       } else {
         scanStatement.setString(1, startKey);
         scanStatement.setInt(2, recordcount);
@@ -454,7 +516,7 @@ public class JdbcDBClient extends DB {
             int[] results = insertStatement.executeBatch();
             for (int r : results) {
               // Acceptable values are 1 and SUCCESS_NO_INFO (-2) from reWriteBatchedInserts=true
-              if (r != 1 && r != -2) { 
+              if (r != 1 && r != -2) {
                 return Status.ERROR;
               }
             }
@@ -471,6 +533,8 @@ public class JdbcDBClient extends DB {
         // Normal update
         int result = insertStatement.executeUpdate();
         // If we are not autoCommit, we might have to commit now
+        // TODO: may remove autocommit in insert, altho currently do not affect workload a/b/f
+        // TODO: but with batch insert, need to be careful about the actual rows inserted when encountering commit error
         if (!autoCommit) {
           // Let updates be batcher locally
           if (batchSize > 0) {
@@ -490,7 +554,7 @@ public class JdbcDBClient extends DB {
         }
       }
       return Status.UNEXPECTED_STATE;
-    } catch (SQLException e) {
+    }  catch (SQLException e) {
       System.err.println("Error in processing insert to table: " + tableName + e);
       return Status.ERROR;
     }
@@ -531,4 +595,40 @@ public class JdbcDBClient extends DB {
 
     return new OrderedFieldInfo(fieldKeys, fieldValues);
   }
+
+  /** implemented for closed_economy_workload */
+  @Override
+  public long validate() throws DBException{
+    super.validate();
+
+    /** check driver class and pass corresponding validate query */
+    String driverClass = props.getProperty(DRIVER_CLASS);
+    String psqlValidateQuery = "SELECT SUM(field0::numeric) FROM usertable;";
+    String mysqlValidateQuery = "SELECT SUM(CAST(field0 AS SIGNED)) FROM usertable;";
+    String query = driverClass.contains("mysql") ? mysqlValidateQuery : psqlValidateQuery;
+
+    // initialize to 0
+    long countedSum = 0L;
+
+    try (Connection conn = conns.get(0);
+         PreparedStatement preparedStatement = conn.prepareStatement(query);
+         ResultSet resultSet = preparedStatement.executeQuery()) {
+        if (resultSet.next()) {
+            countedSum = resultSet.getLong(1);
+        } else {
+            System.err.println("No result found for validation.");
+        }
+
+        if (resultSet.next()) {
+            System.err.println("Expected exactly one row for validation.");
+        }
+
+        return countedSum;
+    } catch (SQLException e) {
+      System.err.println("Error in processing validate to table: " + e.getMessage());
+      e.printStackTrace();
+      throw new DBException(e);
+    }
+  }
+
 }

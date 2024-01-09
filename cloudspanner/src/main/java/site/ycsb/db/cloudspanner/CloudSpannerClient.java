@@ -16,37 +16,20 @@
  */
 package site.ycsb.db.cloudspanner;
 
-import com.google.common.base.Joiner;
-import com.google.cloud.spanner.DatabaseId;
-import com.google.cloud.spanner.DatabaseClient;
-import com.google.cloud.spanner.Key;
-import com.google.cloud.spanner.KeySet;
-import com.google.cloud.spanner.KeyRange;
-import com.google.cloud.spanner.Mutation;
-import com.google.cloud.spanner.Options;
-import com.google.cloud.spanner.ResultSet;
-import com.google.cloud.spanner.SessionPoolOptions;
-import com.google.cloud.spanner.Spanner;
-import com.google.cloud.spanner.SpannerOptions;
+import com.google.cloud.spanner.*;
 import com.google.cloud.spanner.Statement;
-import com.google.cloud.spanner.Struct;
-import com.google.cloud.spanner.StructReader;
-import com.google.cloud.spanner.TimestampBound;
+import com.google.cloud.spanner.Statement.Builder;
+import com.google.common.base.Joiner;
 import site.ycsb.ByteIterator;
 import site.ycsb.Client;
 import site.ycsb.DB;
 import site.ycsb.DBException;
 import site.ycsb.Status;
 import site.ycsb.StringByteIterator;
+import site.ycsb.workloads.ClosedEconomyWorkload;
 import site.ycsb.workloads.CoreWorkload;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
-import java.util.Vector;
+import java.util.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.concurrent.TimeUnit;
@@ -100,6 +83,7 @@ public class CloudSpannerClient extends DB {
      * Number of Cloud Spanner client channels to use. It's recommended to leave this to be the default value.
      */
     static final String NUM_CHANNELS = "cloudspanner.channels";
+    static final String UPDATE_MODE = "cloudspanner.updatemode";
   }
 
   private static int fieldCount;
@@ -113,6 +97,8 @@ public class CloudSpannerClient extends DB {
   private static String standardQuery;
 
   private static String standardScan;
+
+  private static String standardValidate;
 
   private static final ArrayList<String> STANDARD_FIELDS = new ArrayList<>();
 
@@ -129,6 +115,10 @@ public class CloudSpannerClient extends DB {
   // Single database client per process.
   private static DatabaseClient dbClient = null;
 
+  private TransactionManager transactionManager = null;
+  private TransactionContext tx = null;
+  private static boolean queriesForUpdates;
+
   // Buffered mutations on a per object/thread basis for batch inserts.
   // Note that we have a separate CloudSpannerClient object per thread.
   private final ArrayList<Mutation> bufferedMutations = new ArrayList<>();
@@ -137,10 +127,17 @@ public class CloudSpannerClient extends DB {
     String table = properties.getProperty(CoreWorkload.TABLENAME_PROPERTY, CoreWorkload.TABLENAME_PROPERTY_DEFAULT);
     final String fieldprefix = properties.getProperty(CoreWorkload.FIELD_NAME_PREFIX,
                                                       CoreWorkload.FIELD_NAME_PREFIX_DEFAULT);
+    String validateTable = properties.getProperty(ClosedEconomyWorkload.TABLE_NAME_PROPERTY,
+                                                  ClosedEconomyWorkload.TABLE_NAME_PROPERTY_DEFAULT);
+    String validateField = properties.getProperty(ClosedEconomyWorkload.FIELD_NAME,
+                                                  ClosedEconomyWorkload.DEFAULT_FIELD_NAME);
+
     standardQuery = new StringBuilder()
         .append("SELECT * FROM ").append(table).append(" WHERE id=@key").toString();
     standardScan = new StringBuilder()
         .append("SELECT * FROM ").append(table).append(" WHERE id>=@startKey LIMIT @count").toString();
+    standardValidate = new StringBuilder().append("SELECT SUM(CAST(").append(validateField)
+        .append(" AS INT64)) FROM ").append(validateTable).toString();
     for (int i = 0; i < fieldCount; i++) {
       STANDARD_FIELDS.add(fieldprefix + i);
     }
@@ -156,7 +153,7 @@ public class CloudSpannerClient extends DB {
         .setSessionPoolOption(SessionPoolOptions.newBuilder()
             .setMinSessions(numThreads)
             // Since we have no read-write transactions, we can set the write session fraction to 0.
-            .setWriteSessionsFraction(0)
+//            .setWriteSessionsFraction(0)
             .build());
     if (host != null) {
       optionsBuilder.setHost(host);
@@ -192,6 +189,7 @@ public class CloudSpannerClient extends DB {
       fieldCount = Integer.parseInt(properties.getProperty(
           CoreWorkload.FIELD_COUNT_PROPERTY, CoreWorkload.FIELD_COUNT_PROPERTY_DEFAULT));
       queriesForReads = properties.getProperty(CloudSpannerProperties.READ_MODE, "query").equals("query");
+      queriesForUpdates = properties.getProperty(CloudSpannerProperties.UPDATE_MODE, "update").equals("query");
       batchInserts = Integer.parseInt(properties.getProperty(CloudSpannerProperties.BATCH_INSERTS, "1"));
       constructStandardQueriesAndFields(properties);
 
@@ -239,18 +237,21 @@ public class CloudSpannerClient extends DB {
           .bind("key").to(key)
           .build();
     }
-    try (ResultSet resultSet = dbClient.singleUse(timestampBound).executeQuery(query)) {
+
+    try (ResultSet resultSet = tx.executeQuery(query)) {
       resultSet.next();
       decodeStruct(columns, resultSet, result);
       if (resultSet.next()) {
-        throw new Exception("Expected exactly one row for each read.");
+        LOGGER.log(Level.INFO, "readUsingQuery(): Expected exactly one row for each read.");
       }
-
       return Status.OK;
-    } catch (Exception e) {
+    } catch (AbortedException ae) {
+      return Status.ERROR;
+    } catch(Exception e) {
       LOGGER.log(Level.INFO, "readUsingQuery()", e);
       return Status.ERROR;
     }
+
   }
 
   @Override
@@ -261,7 +262,7 @@ public class CloudSpannerClient extends DB {
     }
     Iterable<String> columns = fields == null ? STANDARD_FIELDS : fields;
     try {
-      Struct row = dbClient.singleUse(timestampBound).readRow(table, Key.of(key), columns);
+      Struct row = tx.readRow(table, Key.of(key), columns);
       decodeStruct(columns, row, result);
       return Status.OK;
     } catch (Exception e) {
@@ -288,18 +289,22 @@ public class CloudSpannerClient extends DB {
           .bind("count").to(recordCount)
           .build();
     }
-    try (ResultSet resultSet = dbClient.singleUse(timestampBound).executeQuery(query)) {
+
+    try (ResultSet resultSet = tx.executeQuery(query)) {
       while (resultSet.next()) {
         HashMap<String, ByteIterator> row = new HashMap<>();
         decodeStruct(columns, resultSet, row);
         result.add(row);
       }
       return Status.OK;
+    } catch (AbortedException ae) {
+      return Status.ERROR;
     } catch (Exception e) {
       LOGGER.log(Level.INFO, "scanUsingQuery()", e);
       return Status.ERROR;
     }
   }
+
 
   @Override
   public Status scan(
@@ -311,8 +316,7 @@ public class CloudSpannerClient extends DB {
     Iterable<String> columns = fields == null ? STANDARD_FIELDS : fields;
     KeySet keySet =
         KeySet.newBuilder().addRange(KeyRange.closedClosed(Key.of(startKey), Key.of())).build();
-    try (ResultSet resultSet = dbClient.singleUse(timestampBound)
-                                       .read(table, keySet, columns, Options.limit(recordCount))) {
+    try (ResultSet resultSet = tx.read(table, keySet, columns, Options.limit(recordCount))) {
       while (resultSet.next()) {
         HashMap<String, ByteIterator> row = new HashMap<>();
         decodeStruct(columns, resultSet, row);
@@ -327,13 +331,16 @@ public class CloudSpannerClient extends DB {
 
   @Override
   public Status update(String table, String key, Map<String, ByteIterator> values) {
+    if (queriesForUpdates) {
+      return updateUsingQuery(table, key, values);
+    }
     Mutation.WriteBuilder m = Mutation.newInsertOrUpdateBuilder(table);
     m.set(PRIMARY_KEY_COLUMN).to(key);
     for (Map.Entry<String, ByteIterator> e : values.entrySet()) {
       m.set(e.getKey()).to(e.getValue().toString());
     }
     try {
-      dbClient.writeAtLeastOnce(Arrays.asList(m.build()));
+      tx.buffer(Arrays.asList(m.build()));
     } catch (Exception e) {
       LOGGER.log(Level.INFO, "update()", e);
       return Status.ERROR;
@@ -358,7 +365,7 @@ public class CloudSpannerClient extends DB {
       return Status.BATCHED_OK;
     }
     try {
-      dbClient.writeAtLeastOnce(bufferedMutations);
+      tx.buffer(bufferedMutations);
       bufferedMutations.clear();
     } catch (Exception e) {
       LOGGER.log(Level.INFO, "insert()", e);
@@ -371,7 +378,10 @@ public class CloudSpannerClient extends DB {
   public void cleanup() {
     try {
       if (bufferedMutations.size() > 0) {
-        dbClient.writeAtLeastOnce(bufferedMutations);
+        transactionManager = dbClient.transactionManager();
+        tx = transactionManager.begin();
+        tx.buffer(bufferedMutations);
+        transactionManager.commit();
         bufferedMutations.clear();
       }
     } catch (Exception e) {
@@ -382,7 +392,7 @@ public class CloudSpannerClient extends DB {
   @Override
   public Status delete(String table, String key) {
     try {
-      dbClient.writeAtLeastOnce(Arrays.asList(Mutation.delete(table, Key.of(key))));
+      tx.buffer(Arrays.asList(Mutation.delete(table, Key.of(key))));
     } catch (Exception e) {
       LOGGER.log(Level.INFO, "delete()", e);
       return Status.ERROR;
@@ -396,4 +406,88 @@ public class CloudSpannerClient extends DB {
       result.put(col, new StringByteIterator(structReader.getString(col)));
     }
   }
-}
+
+  @Override
+  public void start() throws DBException {
+    super.start();
+    transactionManager = dbClient.transactionManager();
+    tx = transactionManager.begin();
+  }
+
+  @Override
+  public void commit() throws DBException {
+    super.commit();
+    try {
+      transactionManager.commit();
+    } catch (AbortedException e) {
+      throw new DBException(e);
+    }
+  }
+
+  @Override
+  public void abort() throws DBException {
+    super.abort();
+    transactionManager.close();
+  }
+
+  @Override
+  public long validate() throws DBException {
+    super.validate();
+    long countedSum;
+
+    Statement query = Statement.newBuilder(standardValidate).build();
+
+    try (ResultSet resultSet = dbClient.singleUse(timestampBound).executeQuery(query)) {
+      resultSet.next();
+      countedSum = resultSet.getLong(0);
+      if (resultSet.next()) {
+        throw new Exception("Expected exactly one row for validation.");
+      }
+      return countedSum;
+    } catch (Exception e) {
+      LOGGER.log(Level.INFO, "validate()", e);
+      throw new DBException(e);
+    }
+  }
+
+  private Status updateUsingQuery(String table, String key, Map<String, ByteIterator> values){
+    if (values == null || values.isEmpty()) {
+      LOGGER.log(Level.INFO, "updateUsingQuery(): Values are null.");
+      return Status.ERROR;
+    }
+
+    HashSet<String> fields = new HashSet<>(values.keySet());
+    Builder statementBuilder = Statement.newBuilder("UPDATE " + table + " SET ");
+    // Iterate over the fields and append them to the query
+    boolean firstField = true;
+    for (String field : fields) {
+      if (!firstField) {
+        statementBuilder.append(", ");
+      }
+      statementBuilder.append(field).append(" = @").append(field);
+      firstField = false;
+    }
+    // Append the WHERE clause
+    statementBuilder.append(" WHERE id = @id");
+    // Bind parameters
+    Builder boundStatementBuilder = statementBuilder.bind("id").to(key);
+    for (Map.Entry<String, ByteIterator> entry : values.entrySet()) {
+      boundStatementBuilder = boundStatementBuilder.bind(entry.getKey()).to(entry.getValue().toString());
+    }
+    Statement query = boundStatementBuilder.build();
+
+      try {
+        long rowCount = tx.executeUpdate(query);
+        if (rowCount != 1) {
+          throw new Exception("Expected to update exactly one row.");
+        }
+        return Status.OK;
+      } catch (AbortedException ae) {
+        return Status.ERROR;
+      } catch(Exception e) {
+        LOGGER.log(Level.INFO, "updateUsingQuery()", e);
+        return Status.ERROR;
+      }
+  }
+
+ }

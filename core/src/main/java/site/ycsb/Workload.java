@@ -119,4 +119,16 @@ public abstract class Workload {
   public boolean isStopRequested() {
     return stopRequested.get();
   }
+
+  /**
+   * Perform validation of the database db after the workload has executed.
+   * 
+   * @return false if the workload left the database in an inconsistent state, true if it is consistent.
+   * @throws WorkloadException 
+   */
+  public boolean validate(DB db) throws WorkloadException {
+    System.err.println("No validation done due to no validate() implementation in this workload.");
+    System.out.println("[VALIDATE], STATUS, NO IMPLEMENTATION");
+    return false;
+  }
 }

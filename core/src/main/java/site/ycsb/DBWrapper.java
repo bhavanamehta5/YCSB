@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2010 Yahoo! Inc., 2016-2020 YCSB contributors. All rights reserved.
+ * Copyright (c) 2010 Yahoo! Inc., 2016-2017 YCSB contributors. All rights reserved.
  * <p>
  * Licensed under the Apache License, Version 2.0 (the "License"); you
  * may not use this file except in compliance with the License. You
@@ -18,7 +18,6 @@
 package site.ycsb;
 
 import java.util.Map;
-
 import site.ycsb.measurements.Measurements;
 import org.apache.htrace.core.TraceScope;
 import org.apache.htrace.core.Tracer;
@@ -52,6 +51,10 @@ public class DBWrapper extends DB {
   private final String scopeStringRead;
   private final String scopeStringScan;
   private final String scopeStringUpdate;
+  private final String scopeStringStart;
+  private final String scopeStringCommit;
+  private final String scopeStringAbort;
+  private final String scopeStringValidate;
 
   public DBWrapper(final DB db, final Tracer tracer) {
     this.db = db;
@@ -65,6 +68,10 @@ public class DBWrapper extends DB {
     scopeStringRead = simple + "#read";
     scopeStringScan = simple + "#scan";
     scopeStringUpdate = simple + "#update";
+    scopeStringStart = simple + "#start";
+    scopeStringCommit = simple + "#commit";
+    scopeStringAbort = simple + "#abort";
+    scopeStringValidate = simple + "#validate";
   }
 
   /**
@@ -115,11 +122,85 @@ public class DBWrapper extends DB {
    */
   public void cleanup() throws DBException {
     try (final TraceScope span = tracer.newScope(scopeStringCleanup)) {
-      long ist = measurements.getIntendedStartTimeNs();
+      long ist = measurements.getIntendedtartTimeNs();
       long st = System.nanoTime();
       db.cleanup();
       long en = System.nanoTime();
       measure("CLEANUP", Status.OK, ist, st, en);
+    }
+  }
+
+  public void start() throws DBException {
+    try (final TraceScope span = tracer.newScope(scopeStringStart)) {
+      long ist = measurements.getIntendedtartTimeNs();
+      long st=System.nanoTime();
+      try {
+        db.start();
+        long en = System.nanoTime();
+        measure("START", Status.OK, ist, st, en);
+        measurements.reportStatus("START", Status.OK);
+      } catch (DBException e) {
+        long en=System.nanoTime();
+        measure("START", Status.ERROR, ist, st, en);
+        measurements.reportStatus("START", Status.ERROR);
+        throw e;
+      }
+    }
+	}
+
+	public void commit() throws DBException {
+    try (final TraceScope span = tracer.newScope(scopeStringCommit)) {
+      long ist = measurements.getIntendedtartTimeNs();
+      long st=System.nanoTime();
+      try {
+        db.commit();
+        long en = System.nanoTime();
+        measure("COMMIT", Status.OK, ist, st, en);
+        measurements.reportStatus("COMMIT", Status.OK);
+      } catch (DBException e) {
+        long en = System.nanoTime();
+        measure("COMMIT", Status.ERROR, ist, st, en);
+        measurements.reportStatus("COMMIT", Status.ERROR);
+        throw e;
+      }
+    }
+
+	}
+
+	public void abort() throws DBException {
+    try (final TraceScope span = tracer.newScope(scopeStringAbort)) {
+      long ist = measurements.getIntendedtartTimeNs();
+      long st=System.nanoTime();
+      try {
+        db.abort();
+        long en = System.nanoTime();
+        measure("ABORT", Status.OK, ist, st, en);
+        measurements.reportStatus("ABORT", Status.OK);
+      } catch (DBException e) {
+        long en=System.nanoTime();
+        measure("ABORT", Status.ERROR, ist, st, en);
+        measurements.reportStatus("ABORT", Status.ERROR);
+      }
+    }
+	}
+
+  public long validate() throws DBException {
+    try (final TraceScope span = tracer.newScope(scopeStringValidate)) {
+      long ist = measurements.getIntendedtartTimeNs();
+      long st=System.nanoTime();
+      long countedSum;
+      try {
+        countedSum = db.validate();
+        long en = System.nanoTime();
+        measure("VALIDATE", Status.OK, ist, st, en);
+        measurements.reportStatus("VALIDATE", Status.OK);
+        return countedSum;
+      } catch (DBException e) {
+        long en=System.nanoTime();
+        measure("VALIDATE", Status.ERROR, ist, st, en);
+        measurements.reportStatus("VALIDATE", Status.ERROR);
+        throw e;
+      }
     }
   }
 
@@ -136,7 +217,7 @@ public class DBWrapper extends DB {
   public Status read(String table, String key, Set<String> fields,
                      Map<String, ByteIterator> result) {
     try (final TraceScope span = tracer.newScope(scopeStringRead)) {
-      long ist = measurements.getIntendedStartTimeNs();
+      long ist = measurements.getIntendedtartTimeNs();
       long st = System.nanoTime();
       Status res = db.read(table, key, fields, result);
       long en = System.nanoTime();
@@ -160,7 +241,7 @@ public class DBWrapper extends DB {
   public Status scan(String table, String startkey, int recordcount,
                      Set<String> fields, Vector<HashMap<String, ByteIterator>> result) {
     try (final TraceScope span = tracer.newScope(scopeStringScan)) {
-      long ist = measurements.getIntendedStartTimeNs();
+      long ist = measurements.getIntendedtartTimeNs();
       long st = System.nanoTime();
       Status res = db.scan(table, startkey, recordcount, fields, result);
       long en = System.nanoTime();
@@ -199,7 +280,7 @@ public class DBWrapper extends DB {
   public Status update(String table, String key,
                        Map<String, ByteIterator> values) {
     try (final TraceScope span = tracer.newScope(scopeStringUpdate)) {
-      long ist = measurements.getIntendedStartTimeNs();
+      long ist = measurements.getIntendedtartTimeNs();
       long st = System.nanoTime();
       Status res = db.update(table, key, values);
       long en = System.nanoTime();
@@ -222,7 +303,7 @@ public class DBWrapper extends DB {
   public Status insert(String table, String key,
                        Map<String, ByteIterator> values) {
     try (final TraceScope span = tracer.newScope(scopeStringInsert)) {
-      long ist = measurements.getIntendedStartTimeNs();
+      long ist = measurements.getIntendedtartTimeNs();
       long st = System.nanoTime();
       Status res = db.insert(table, key, values);
       long en = System.nanoTime();
@@ -241,7 +322,7 @@ public class DBWrapper extends DB {
    */
   public Status delete(String table, String key) {
     try (final TraceScope span = tracer.newScope(scopeStringDelete)) {
-      long ist = measurements.getIntendedStartTimeNs();
+      long ist = measurements.getIntendedtartTimeNs();
       long st = System.nanoTime();
       Status res = db.delete(table, key);
       long en = System.nanoTime();
@@ -250,4 +331,5 @@ public class DBWrapper extends DB {
       return res;
     }
   }
+
 }

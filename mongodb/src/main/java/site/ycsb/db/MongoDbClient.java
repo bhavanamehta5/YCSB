@@ -24,14 +24,9 @@
  */
 package site.ycsb.db;
 
+import com.mongodb.*;
 import com.mongodb.MongoClient;
-import com.mongodb.MongoClientURI;
-import com.mongodb.ReadPreference;
-import com.mongodb.WriteConcern;
-import com.mongodb.client.FindIterable;
-import com.mongodb.client.MongoCollection;
-import com.mongodb.client.MongoCursor;
-import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.*;
 import com.mongodb.client.model.InsertManyOptions;
 import com.mongodb.client.model.UpdateOneModel;
 import com.mongodb.client.model.UpdateOptions;
@@ -111,6 +106,9 @@ public class MongoDbClient extends DB {
   /** The bulk inserts pending for the thread. */
   private final List<Document> bulkInserts = new ArrayList<Document>();
 
+  /** MongoDB client session */
+  private ClientSession session;
+
   /**
    * Cleanup any state for this DB. Called once per DB instance; there is one DB
    * instance per client thread.
@@ -119,6 +117,7 @@ public class MongoDbClient extends DB {
   public void cleanup() throws DBException {
     if (INIT_COUNT.decrementAndGet() == 0) {
       try {
+        // session.close();
         mongoClient.close();
       } catch (Exception e1) {
         System.err.println("Could not close MongoDB connection pool: "
@@ -194,11 +193,10 @@ public class MongoDbClient extends DB {
 
       url = OptionsSupport.updateUrl(url, props);
 
-      if (!url.startsWith("mongodb://") && !url.startsWith("mongodb+srv://")) {
+      if (!url.startsWith("mongodb://")) {
         System.err.println("ERROR: Invalid URL: '" + url
             + "'. Must be of the form "
-            + "'mongodb://<host1>:<port1>,<host2>:<port2>/database?options' "
-            + "or 'mongodb+srv://<host>/database?options'. "
+            + "'mongodb://<host1>:<port1>,<host2>:<port2>/database?options'. "
             + "http://docs.mongodb.org/manual/reference/connection-string/");
         System.exit(1);
       }
@@ -224,6 +222,8 @@ public class MongoDbClient extends DB {
             mongoClient.getDatabase(databaseName)
                 .withReadPreference(readPreference)
                 .withWriteConcern(writeConcern);
+
+        // session = mongoClient.startSession();
 
         System.out.println("mongo client connection created with " + url);
       } catch (Exception e1) {
@@ -467,5 +467,23 @@ public class MongoDbClient extends DB {
             new ByteArrayByteIterator(((Binary) entry.getValue()).getData()));
       }
     }
+  }
+
+  @Override
+  public void start(){
+    session = mongoClient.startSession();
+    session.startTransaction(TransactionOptions.builder().writeConcern(WriteConcern.MAJORITY).build());
+  }
+
+  @Override
+  public void commit(){
+    session.commitTransaction();
+    session.close();
+  }
+
+  @Override
+  public void abort(){
+    session.abortTransaction();
+    session.close();
   }
 }

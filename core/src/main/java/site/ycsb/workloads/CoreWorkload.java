@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2010 Yahoo! Inc., Copyright (c) 2016-2020 YCSB contributors. All rights reserved.
+ * Copyright (c) 2010 Yahoo! Inc., Copyright (c) 2016-2017 YCSB contributors. All rights reserved.
  * <p>
  * Licensed under the Apache License, Version 2.0 (the "License"); you
  * may not use this file except in compliance with the License. You
@@ -32,11 +32,11 @@ import java.util.*;
  * <p>
  * Properties to control the client:
  * <UL>
- * <LI><b>fieldcount</b>: the number of fields in a record (default: 10)
+ * <LI><b>fieldCount</b>: the number of fields in a record (default: 10)
  * <LI><b>fieldlength</b>: the size of each field (default: 100)
  * <LI><b>minfieldlength</b>: the minimum size of each field (default: 1)
- * <LI><b>readallfields</b>: should reads read all fields (true) or just one (false) (default: true)
- * <LI><b>writeallfields</b>: should updates and read/modify/writes update all fields (true) or just
+ * <LI><b>readAllFields</b>: should reads read all fields (true) or just one (false) (default: true)
+ * <LI><b>writeAllFields</b>: should updates and read/modify/writes update all fields (true) or just
  * one (false) (default: false)
  * <LI><b>readproportion</b>: what proportion of operations should be reads (default: 0.95)
  * <LI><b>updateproportion</b>: what proportion of operations should be updates (default: 0.05)
@@ -53,7 +53,7 @@ import java.util.*;
  * <LI><b>insertstart</b>: for parallel loads and runs, defines the starting record for this
  * YCSB instance (default: 0)
  * <LI><b>insertcount</b>: for parallel loads and runs, defines the number of records for this
- * YCSB instance (default: recordcount)
+ * YCSB instance (default: recordCount)
  * <LI><b>zeropadding</b>: for generating a record sequence compatible with string sort order by
  * 0 padding the record number. Controls the number of 0s to use for padding. (default: 1)
  * For example for row 5, with zeropadding=1 you get 'user5' key and with zeropading=8 you get
@@ -81,13 +81,13 @@ public class CoreWorkload extends Workload {
   /**
    * The name of the property for the number of fields in a record.
    */
-  public static final String FIELD_COUNT_PROPERTY = "fieldcount";
+  public static final String FIELD_COUNT_PROPERTY = "fieldCount";
 
   /**
    * Default number of fields in a record.
    */
   public static final String FIELD_COUNT_PROPERTY_DEFAULT = "10";
-  
+
   private List<String> fieldnames;
 
   /**
@@ -149,14 +149,14 @@ public class CoreWorkload extends Workload {
   public static final String READ_ALL_FIELDS_PROPERTY = "readallfields";
 
   /**
-   * The default value for the readallfields property.
+   * The default value for the readAllFields property.
    */
   public static final String READ_ALL_FIELDS_PROPERTY_DEFAULT = "true";
 
   protected boolean readallfields;
 
   /**
-   * The name of the property for determining how to read all the fields when readallfields is true.
+   * The name of the property for determining how to read all the fields when readAllFields is true.
    * If set to true, all the field names will be passed into the underlying client. If set to false,
    * null will be passed into the underlying client. When passed a null, some clients may retrieve
    * the entire row with a wildcard, which may be slower than naming all the fields.
@@ -177,7 +177,7 @@ public class CoreWorkload extends Workload {
   public static final String WRITE_ALL_FIELDS_PROPERTY = "writeallfields";
 
   /**
-   * The default value for the writeallfields property.
+   * The default value for the writeAllFields property.
    */
   public static final String WRITE_ALL_FIELDS_PROPERTY_DEFAULT = "false";
 
@@ -371,19 +371,6 @@ public class CoreWorkload extends Workload {
 
   private Measurements measurements = Measurements.getMeasurements();
 
-  public static String buildKeyName(long keynum, int zeropadding, boolean orderedinserts) {
-    if (!orderedinserts) {
-      keynum = Utils.hash(keynum);
-    }
-    String value = Long.toString(keynum);
-    int fill = zeropadding - value.length();
-    String prekey = "user";
-    for (int i = 0; i < fill; i++) {
-      prekey += '0';
-    }
-    return prekey + value;
-  }
-
   protected static NumberGenerator getFieldLengthGenerator(Properties p) throws WorkloadException {
     NumberGenerator fieldlengthgenerator;
     String fieldlengthdistribution = p.getProperty(
@@ -449,10 +436,10 @@ public class CoreWorkload extends Workload {
         Long.parseLong(p.getProperty(INSERT_START_PROPERTY, INSERT_START_PROPERTY_DEFAULT));
     long insertcount=
         Integer.parseInt(p.getProperty(INSERT_COUNT_PROPERTY, String.valueOf(recordcount - insertstart)));
-    // Confirm valid values for insertstart and insertcount in relation to recordcount
+    // Confirm valid values for insertstart and insertcount in relation to recordCount
     if (recordcount < (insertstart + insertcount)) {
-      System.err.println("Invalid combination of insertstart, insertcount and recordcount.");
-      System.err.println("recordcount must be bigger than insertstart + insertcount.");
+      System.err.println("Invalid combination of insertstart, insertcount and recordCount.");
+      System.err.println("recordCount must be bigger than insertstart + insertcount.");
       System.exit(-1);
     }
     zeropadding =
@@ -460,23 +447,18 @@ public class CoreWorkload extends Workload {
 
     readallfields = Boolean.parseBoolean(
         p.getProperty(READ_ALL_FIELDS_PROPERTY, READ_ALL_FIELDS_PROPERTY_DEFAULT));
-    readallfieldsbyname = Boolean.parseBoolean(
-        p.getProperty(READ_ALL_FIELDS_BY_NAME_PROPERTY, READ_ALL_FIELDS_BY_NAME_PROPERTY_DEFAULT));
     writeallfields = Boolean.parseBoolean(
         p.getProperty(WRITE_ALL_FIELDS_PROPERTY, WRITE_ALL_FIELDS_PROPERTY_DEFAULT));
 
     dataintegrity = Boolean.parseBoolean(
         p.getProperty(DATA_INTEGRITY_PROPERTY, DATA_INTEGRITY_PROPERTY_DEFAULT));
-    // Confirm that fieldlengthgenerator returns a constant if data
+    // Confirm that fieldLengthGenerator returns a constant if data
     // integrity check requested.
     if (dataintegrity && !(p.getProperty(
         FIELD_LENGTH_DISTRIBUTION_PROPERTY,
         FIELD_LENGTH_DISTRIBUTION_PROPERTY_DEFAULT)).equals("constant")) {
       System.err.println("Must have constant field size to check data integrity.");
       System.exit(-1);
-    }
-    if (dataintegrity) {
-      System.out.println("Data integrity is enabled.");
     }
 
     if (p.getProperty(INSERT_ORDER_PROPERTY, INSERT_ORDER_PROPERTY_DEFAULT).compareTo("hashed") == 0) {
@@ -545,6 +527,21 @@ public class CoreWorkload extends Workload {
         INSERTION_RETRY_LIMIT, INSERTION_RETRY_LIMIT_DEFAULT));
     insertionRetryInterval = Integer.parseInt(p.getProperty(
         INSERTION_RETRY_INTERVAL, INSERTION_RETRY_INTERVAL_DEFAULT));
+    System.out.printf("[CONFIG], Record_Count, %s\n", recordcount);
+    System.out.printf("[CONFIG], Request_Distrib, %s\n", requestdistrib);
+  }
+
+  protected String buildKeyName(long keynum) {
+    if (!orderedinserts) {
+      keynum = Utils.hash(keynum);
+    }
+    String value = Long.toString(keynum);
+    int fill = zeropadding - value.length();
+    String prekey = "user";
+    for (int i = 0; i < fill; i++) {
+      prekey += '0';
+    }
+    return prekey + value;
   }
 
   /**
@@ -612,7 +609,7 @@ public class CoreWorkload extends Workload {
   @Override
   public boolean doInsert(DB db, Object threadstate) {
     int keynum = keysequence.nextValue().intValue();
-    String dbkey = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
+    String dbkey = buildKeyName(keynum);
     HashMap<String, ByteIterator> values = buildValues(dbkey);
 
     Status status;
@@ -723,7 +720,7 @@ public class CoreWorkload extends Workload {
     // choose a random key
     long keynum = nextKeynum();
 
-    String keyname = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
+    String keyname = buildKeyName(keynum);
 
     HashSet<String> fields = null;
 
@@ -733,7 +730,7 @@ public class CoreWorkload extends Workload {
 
       fields = new HashSet<String>();
       fields.add(fieldname);
-    } else if (dataintegrity || readallfieldsbyname) {
+    } else if (dataintegrity) {
       // pass the full field list if dataintegrity is on for verification
       fields = new HashSet<String>(fieldnames);
     }
@@ -750,7 +747,7 @@ public class CoreWorkload extends Workload {
     // choose a random key
     long keynum = nextKeynum();
 
-    String keyname = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
+    String keyname = buildKeyName(keynum);
 
     HashSet<String> fields = null;
 
@@ -777,7 +774,7 @@ public class CoreWorkload extends Workload {
     HashMap<String, ByteIterator> cells = new HashMap<String, ByteIterator>();
 
 
-    long ist = measurements.getIntendedStartTimeNs();
+    long ist = measurements.getIntendedtartTimeNs();
     long st = System.nanoTime();
     db.read(table, keyname, fields, cells);
 
@@ -797,7 +794,7 @@ public class CoreWorkload extends Workload {
     // choose a random key
     long keynum = nextKeynum();
 
-    String startkeyname = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
+    String startkeyname = buildKeyName(keynum);
 
     // choose a random scan length
     int len = scanlength.nextValue().intValue();
@@ -819,7 +816,7 @@ public class CoreWorkload extends Workload {
     // choose a random key
     long keynum = nextKeynum();
 
-    String keyname = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
+    String keyname = buildKeyName(keynum);
 
     HashMap<String, ByteIterator> values;
 
@@ -839,7 +836,7 @@ public class CoreWorkload extends Workload {
     long keynum = transactioninsertkeysequence.nextValue();
 
     try {
-      String dbkey = CoreWorkload.buildKeyName(keynum, zeropadding, orderedinserts);
+      String dbkey = buildKeyName(keynum);
 
       HashMap<String, ByteIterator> values = buildValues(dbkey);
       db.insert(table, dbkey, values);
@@ -893,6 +890,14 @@ public class CoreWorkload extends Workload {
     if (readmodifywriteproportion > 0) {
       operationchooser.addValue(readmodifywriteproportion, "READMODIFYWRITE");
     }
+
+    String s = "[CONFIG], READ_Proportion, " + readproportion + "\n" +
+        "[CONFIG], UPDATE_Proportion, " + updateproportion + "\n" +
+        "[CONFIG], INSERT_Proportion, " + insertproportion + "\n" +
+        "[CONFIG], SCAN_Proportion, " + scanproportion + "\n" +
+        "[CONFIG], READMODIFYWRITE_Proportion, " + readmodifywriteproportion;
+    System.out.println(s);
+
     return operationchooser;
   }
 }
